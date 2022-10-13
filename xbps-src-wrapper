@@ -1,0 +1,42 @@
+#!/bin/bash
+
+# yoinked from xbps-src :)
+_distdir="$(readlink -f ${0%/*})"
+if [ "${_distdir}" = "." ]; then
+    readonly WRAPPER_DISTDIR="$(pwd -P)"
+else
+    readonly WRAPPER_DISTDIR="${_distdir}"
+fi
+
+readonly XBPS_DISTDIR=$(realpath "${WRAPPER_DISTDIR}/distdir")
+readonly XBPS_SRC="${XBPS_DISTDIR}/xbps-src"
+readonly XBPS_SRCPKGS="${XBPS_DISTDIR}/srcpkgs"
+
+readonly XBPS_SRC_CMD="${XBPS_SRC} -r overlay-wrapper-pkgs $@"
+
+readonly WRAPPER_PRIORITY_REPOSDIR="${WRAPPER_DISTDIR}/priority-repos"
+readonly WRAPPER_REPOSDIR="${WRAPPER_DISTDIR}/repos"
+readonly PRIORITY_REPOS=$(find "${WRAPPER_PRIORITY_REPOSDIR}"/* -maxdepth 0 -exec realpath '{}' \; 2>/dev/null)
+readonly REPOS=$(find "${WRAPPER_REPOSDIR}"/* -maxdepth 0 -exec realpath '{}' \; 2>/dev/null)
+
+# Use xbps-src like normal if there are no extra source repos
+# (overlay mount doesn't like it if there's only one lowerdir)
+if [ -z "${PRIORITY_REPOS}${REPOS}" ]; then
+    ${XBPS_SRC_CMD}
+    exit 0
+fi
+
+readonly LOWERDIRS=$(echo -n "${PRIORITY_REPOS}:${XBPS_SRCPKGS}:${REPOS}" | tr '\n' ':' | sed -e 's/^:*//' -e 's/:*$//')
+# Mount only lowerdirs because I don't think xbps-src writes to srcpkgs
+# (overlay mounted as read-only if only lowerdirs)
+readonly MOUNT_CMD="mount -t overlay overlay -o lowerdir=${LOWERDIRS} ${XBPS_SRCPKGS}"
+
+# xbps-src uses $UID to detect if it's being run as root
+# so we can easily circumvent that detection >:D
+# Alternatively, we could unshare again...
+# Also set git to discover repositories across filesystems because
+# xbps-src tries to use git commands from the srcpkgs directory.
+# I'm pretty sure there's a cleaner solution here but I'm too stupid to figure it out.
+readonly BUILD_CMD="UID=$(id -u) GIT_DISCOVERY_ACROSS_FILESYSTEM=yes ${XBPS_SRC_CMD}"
+
+unshare -r -m -- sh -c "${MOUNT_CMD} && ${BUILD_CMD}"
